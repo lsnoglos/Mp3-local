@@ -210,8 +210,11 @@ public class DownloadService extends Service {
         sendStatus("Comprobando actualización de yt-dlp…", -1, false);
         prefs.edit().putLong("attempt", now).apply();
         try {
-            YoutubeDL.getInstance().updateYoutubeDL(
-                    getApplicationContext(), YoutubeDL.UpdateChannel.STABLE);
+            String result = String.valueOf(YoutubeDL.getInstance().updateYoutubeDL(
+                    getApplicationContext(), YoutubeDL.UpdateChannel._STABLE));
+            if (!"DONE".equals(result) && !"ALREADY_UP_TO_DATE".equals(result)) {
+                throw new IllegalStateException("La actualización devolvió: " + result);
+            }
             prefs.edit().putLong("success", System.currentTimeMillis()).apply();
             sendStatus("Motor yt-dlp preparado", -1, false);
         } catch (Exception error) {
