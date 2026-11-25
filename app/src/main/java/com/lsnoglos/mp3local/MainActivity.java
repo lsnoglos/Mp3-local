@@ -144,10 +144,13 @@ public class MainActivity extends Activity {
         root.addView(tabs);
         browserTab = button("Navegar", ACCENT, BG);
         filesTab = button("Mis MP3", PANEL, WHITE);
+        Button updateMotor = button("↻ Motor", PANEL, WHITE);
         tabs.addView(browserTab, new LinearLayout.LayoutParams(0, dp(42), 1));
         tabs.addView(filesTab, weightedParams());
+        tabs.addView(updateMotor, weightedParams());
         browserTab.setOnClickListener(v -> showLibrary(false));
         filesTab.setOnClickListener(v -> showLibrary(true));
+        updateMotor.setOnClickListener(v -> updateYtDlp());
 
         body = new FrameLayout(this);
         LinearLayout.LayoutParams bodyParams = new LinearLayout.LayoutParams(
@@ -256,6 +259,19 @@ public class MainActivity extends Activity {
             progress.setVisibility(View.VISIBLE);
         } catch (Exception error) {
             message("No se pudo iniciar la descarga: " + error.getMessage());
+        }
+    }
+
+    private void updateYtDlp() {
+        Intent service = new Intent(this, DownloadService.class);
+        service.setAction(DownloadService.ACTION_UPDATE);
+        try {
+            startForegroundService(service);
+            status.setText("Buscando actualizaciones del motor yt-dlp…");
+            progress.setIndeterminate(true);
+            progress.setVisibility(View.VISIBLE);
+        } catch (Exception error) {
+            message("No se pudo iniciar la actualización: " + error.getMessage());
         }
     }
 

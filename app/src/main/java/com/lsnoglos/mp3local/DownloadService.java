@@ -6,6 +6,7 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.ContentValues;
+import android.content.SharedPreferences;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.net.Uri;
@@ -13,6 +14,7 @@ import android.os.Build;
 import android.os.Environment;
 import android.os.IBinder;
 import android.provider.MediaStore;
+import android.util.Log;
 
 import com.yausername.ffmpeg.FFmpeg;
 import com.yausername.youtubedl_android.YoutubeDL;
@@ -36,6 +38,7 @@ import kotlin.Unit;
 public class DownloadService extends Service {
     public static final String ACTION_DOWNLOAD = "com.lsnoglos.mp3local.DOWNLOAD";
     public static final String ACTION_CANCEL = "com.lsnoglos.mp3local.CANCEL";
+    public static final String ACTION_UPDATE = "com.lsnoglos.mp3local.UPDATE";
     public static final String ACTION_STATUS = "com.lsnoglos.mp3local.STATUS";
     public static final String EXTRA_URL = "url";
     public static final String EXTRA_MESSAGE = "message";
@@ -43,6 +46,9 @@ public class DownloadService extends Service {
     public static final String EXTRA_FINISHED = "finished";
     private static final String CHANNEL = "downloads";
     private static final int NOTIFICATION_ID = 1001;
+    private static final String PREFS = "motor_updates";
+    private static final long UPDATE_EVERY = 7L * 24 * 60 * 60 * 1000;
+    private static final long RETRY_AFTER = 24L * 60 * 60 * 1000;
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private volatile boolean running;
@@ -64,9 +70,10 @@ public class DownloadService extends Service {
             cancelDownload();
             return START_NOT_STICKY;
         }
-        if (!ACTION_DOWNLOAD.equals(intent.getAction())) return START_NOT_STICKY;
+        boolean manualUpdate = ACTION_UPDATE.equals(intent.getAction());
+        if (!manualUpdate && !ACTION_DOWNLOAD.equals(intent.getAction())) return START_NOT_STICKY;
         String url = intent.getStringExtra(EXTRA_URL);
-        if (!UrlTools.isVideoUrl(url)) {
+        if (!manualUpdate && !UrlTools.isVideoUrl(url)) {
             sendStatus("Enlace de video inválido", -1, true);
             stopSelf(startId);
             return START_NOT_STICKY;
@@ -80,7 +87,9 @@ public class DownloadService extends Service {
         lastPercent = -2;
         processId = UUID.randomUUID().toString();
         try {
-            Notification notification = notification("Iniciando descarga…", -1, true);
+            Notification notification = notification(
+                    manualUpdate ? "Preparando actualización de yt-dlp…" : "Iniciando descarga…",
+                    -1, true);
             if (Build.VERSION.SDK_INT >= 29) {
                 startForeground(NOTIFICATION_ID, notification,
                         ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
@@ -92,7 +101,10 @@ public class DownloadService extends Service {
             return START_NOT_STICKY;
         }
         final String jobId = processId;
-        executor.execute(() -> downloadAudio(url, jobId, startId));
+        executor.execute(() -> {
+            if (manualUpdate) updateMotor(startId);
+            else downloadAudio(url, jobId, startId);
+        });
         return START_NOT_STICKY;
     }
 
@@ -105,6 +117,8 @@ public class DownloadService extends Service {
             sendStatus("Preparando motor de audio…", -1, false);
             YoutubeDL.getInstance().init(getApplicationContext());
             FFmpeg.getInstance().init(getApplicationContext());
+            // Update the extractor before running it; if offline, retain the bundled version.
+            updateEngine(false);
             if (canceled) throw new InterruptedException("Cancelado");
 
             YoutubeDLRequest request = new YoutubeDLRequest(url);
@@ -141,6 +155,8 @@ public class DownloadService extends Service {
             String detail = exception.getMessage() == null ?
                     exception.getClass().getSimpleName() : exception.getMessage();
             if (canceled) detail = "Descarga cancelada";
+            else if (detail.contains("older than 90 days"))
+                detail = "El motor yt-dlp está desactualizado. Pulsa '↻ Motor' y vuelve a probar.";
             sendStatus(detail, -1, true);
             notifyDone(detail);
         } finally {
@@ -149,6 +165,62 @@ public class DownloadService extends Service {
             processId = null;
             stopForeground(STOP_FOREGROUND_REMOVE);
             stopSelf(startId);
+        }
+    }
+
+    /**
+     * Manual update gives clear feedback; automatic updates are attempted at most once
+     * per day and successful checks are cached for seven days.
+     */
+    private void updateMotor(int startId) {
+        try {
+            sendStatus("Inicializando motor de descarga…", -1, false);
+            YoutubeDL.getInstance().init(getApplicationContext());
+            if (canceled) throw new InterruptedException("Actualización cancelada");
+            updateEngine(true);
+            if (canceled) throw new InterruptedException("Actualización cancelada");
+            sendStatus("Motor yt-dlp actualizado. Puedes descargar MP3.", 100, true);
+            notifyDone("Motor yt-dlp actualizado");
+        } catch (Exception error) {
+            String message = canceled ? "Actualización cancelada" :
+                    "No se pudo actualizar yt-dlp. Revisa la conexión e inténtalo otra vez.";
+            Log.w("MP3Local", "Error al actualizar yt-dlp", error);
+            sendStatus(message, -1, true);
+            notifyDone(message);
+        } finally {
+            running = false;
+            processId = null;
+            stopForeground(STOP_FOREGROUND_REMOVE);
+            stopSelf(startId);
+        }
+    }
+
+    private void updateEngine(boolean force) throws Exception {
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        long now = System.currentTimeMillis();
+        long lastSuccess = prefs.getLong("success", 0);
+        long lastAttempt = prefs.getLong("attempt", 0);
+        if (!force) {
+            if (lastSuccess > 0 && now >= lastSuccess &&
+                    now - lastSuccess < UPDATE_EVERY) return;
+            if (lastAttempt > 0 && now >= lastAttempt &&
+                    now - lastAttempt < RETRY_AFTER) return;
+        }
+        if (canceled) return;
+        sendStatus("Comprobando actualización de yt-dlp…", -1, false);
+        prefs.edit().putLong("attempt", now).apply();
+        try {
+            String result = String.valueOf(YoutubeDL.getInstance().updateYoutubeDL(
+                    getApplicationContext(), YoutubeDL.UpdateChannel._STABLE));
+            if (!"DONE".equals(result) && !"ALREADY_UP_TO_DATE".equals(result)) {
+                throw new IllegalStateException("La actualización devolvió: " + result);
+            }
+            prefs.edit().putLong("success", System.currentTimeMillis()).apply();
+            sendStatus("Motor yt-dlp preparado", -1, false);
+        } catch (Exception error) {
+            if (force) throw error;
+            Log.w("MP3Local", "No se pudo actualizar; se usará el motor local", error);
+            sendStatus("Sin actualización; intentando descarga con motor actual…", -1, false);
         }
     }
 

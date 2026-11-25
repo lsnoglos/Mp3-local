@@ -7,6 +7,8 @@ App nativa y gratuita para **navegar por YouTube**, recibir enlaces desde otras 
 - Navegador integrado con búsqueda de YouTube y enlaces de videos individuales.
 - Pegar enlaces desde el portapapeles o compartirlos desde YouTube con **MP3 Local**.
 - Convertir audio a MP3 (calidad solicitada: 192 kbps; la calidad real depende de la fuente).
+- Actualizar el motor yt-dlp desde la pestaña **↻ Motor**, sin reinstalar la aplicación.
+- Comprobación automática del motor antes de descargar (máximo una vez cada 7 días tras éxito; reintentos con intervalo de 24 horas si falla). Si no hay conexión a GitHub, intenta usar el motor instalado.
 - Descarga en segundo plano mediante servicio de primer plano, notificación de progreso y cancelación.
 - Guardar archivos en **Música / MP3 Local** con MediaStore, sin permisos amplios de almacenamiento.
 - Pestaña **Mis MP3**: reproducir y compartir archivos guardados.
@@ -37,12 +39,17 @@ El flujo de GitHub Actions instala Gradle en el ejecutor, por lo que este reposi
 
 1. Escribe una búsqueda y toca **Ir**, o pega un enlace https de un video.
 2. Abre un video individual dentro del navegador.
-3. Toca **↓ MP3** (solo cuando tengas derecho/autorización para descargarlo).
-4. Espera la notificación de conversión; también puedes tocar **✕** para cancelar.
-5. Abre **Mis MP3** para reproducir o compartir el archivo.
-6. Alternativa útil: desde la app oficial de YouTube, pulsa **Compartir → MP3 Local**, si Android muestra esta aplicación como destino.
+3. La primera descarga comprueba si existe una actualización del motor yt-dlp. Si deseas hacerlo manualmente, pulsa **↻ Motor** y espera la confirmación.
+4. Toca **↓ MP3** (solo cuando tengas derecho/autorización para descargarlo).
+5. Espera la notificación de conversión; también puedes tocar **✕** para cancelar.
+6. Abre **Mis MP3** para reproducir o compartir el archivo.
+7. Alternativa útil: desde la app oficial de YouTube, pulsa **Compartir → MP3 Local**, si Android muestra esta aplicación como destino.
 
 Si YouTube bloquea la reproducción o el inicio de sesión en WebView, utiliza la app oficial y comparte el enlace. Los cambios de YouTube pueden afectar yt-dlp; revisa las actualizaciones de la biblioteca cuando aparezcan errores 403 u otros errores de extracción.
+
+## Mensaje «yt-dlp older than 90 days»
+
+Ese aviso indica que el motor incluido en la APK es antiguo; por sí solo no confirma un fallo. En la versión 1.1.0 pulsa **↻ Motor** para actualizar desde el canal estable de yt-dlp. Si falla la actualización, comprueba la conexión a Internet, especialmente el acceso a GitHub, y repite. La aplicación también intenta actualizar antes de descargar, con una frecuencia limitada para no consumir datos de forma innecesaria.
 
 ## Arquitectura
 
