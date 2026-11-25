@@ -40,6 +40,8 @@ public final class DownloadQueueStore {
         public String message;
         public int percent;
         public long createdAt;
+        public int qualityKbps;
+        public String destinationTree;
 
         Job(String id, String url, String label, String status,
             String message, int percent, long createdAt) {
@@ -50,6 +52,8 @@ public final class DownloadQueueStore {
             this.message = message;
             this.percent = percent;
             this.createdAt = createdAt;
+            this.qualityKbps = OutputSettings.DEFAULT_QUALITY;
+            this.destinationTree = "";
         }
 
         JSONObject toJson() throws JSONException {
@@ -61,11 +65,13 @@ public final class DownloadQueueStore {
             obj.put("message", message);
             obj.put("percent", percent);
             obj.put("createdAt", createdAt);
+            obj.put("qualityKbps", qualityKbps);
+            obj.put("destinationTree", destinationTree);
             return obj;
         }
 
         static Job fromJson(JSONObject obj) {
-            return new Job(
+            Job job = new Job(
                     obj.optString("id", ""),
                     obj.optString("url", ""),
                     obj.optString("label", "Video"),
@@ -74,6 +80,11 @@ public final class DownloadQueueStore {
                     obj.optInt("percent", 0),
                     obj.optLong("createdAt", 0)
             );
+            int bitrate = obj.optInt("qualityKbps", OutputSettings.DEFAULT_QUALITY);
+            job.qualityKbps = OutputSettings.isValidQuality(bitrate) ?
+                    bitrate : OutputSettings.DEFAULT_QUALITY;
+            job.destinationTree = obj.optString("destinationTree", "");
+            return job;
         }
     }
 
@@ -125,6 +136,8 @@ public final class DownloadQueueStore {
         }
         Job job = new Job(UUID.randomUUID().toString(), url, labelFor(url),
                 WAITING, "En espera", 0, System.currentTimeMillis());
+        job.qualityKbps = OutputSettings.quality(context);
+        job.destinationTree = OutputSettings.destination(context);
         jobs.add(job);
         prune(jobs);
         write(context, jobs);
