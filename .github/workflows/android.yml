@@ -21,7 +21,9 @@ jobs:
           distribution: temurin
           java-version: '17'
       - name: Preparar Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
       - name: Instalar Android 36
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
       - name: Configurar Gradle
@@ -29,7 +31,17 @@ jobs:
         with:
           gradle-version: '9.6.0'
       - name: Compilar y probar
-        run: gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug
+        run: |
+          set -o pipefail
+          gradle --no-daemon --stacktrace :app:testDebugUnitTest :app:assembleDebug 2>&1 | tee android-build.log
+      - name: Adjuntar registro de compilacion si falla
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MP3-Local-errores-gradle
+          path: android-build.log
+          if-no-files-found: warn
+          retention-days: 7
       - name: Publicar APK
         if: success()
         uses: actions/upload-artifact@v4
