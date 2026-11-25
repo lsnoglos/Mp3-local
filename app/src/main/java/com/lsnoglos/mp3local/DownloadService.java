@@ -127,7 +127,8 @@ public class DownloadService extends Service {
             DownloadQueueStore.Job job = DownloadQueueStore.takeNext(this);
             if (job == null) break;
             currentId = job.id;
-            canceled = false;
+            // Respect cancellation even if it arrives between takeNext and currentId assignment.
+            canceled = DownloadQueueStore.isCancelled(this, job.id);
             lastPercent = -1;
             broadcastQueue();
             File temp = new File(getCacheDir(), "jobs/" + job.id);
@@ -173,6 +174,8 @@ public class DownloadService extends Service {
     }
 
     private void downloadOne(DownloadQueueStore.Job job, File temp) throws Exception {
+        if (canceled || DownloadQueueStore.isCancelled(this, job.id))
+            throw new InterruptedException("Cancelada");
         if (!temp.exists() && !temp.mkdirs())
             throw new IllegalStateException("No se pudo crear la carpeta temporal");
         setProgress(job, 0, "Preparando motor de audio");
@@ -195,9 +198,12 @@ public class DownloadService extends Service {
         YoutubeDL.getInstance().execute(request, job.id, (percent, eta, line) -> {
             if (canceled) return Unit.INSTANCE;
             int value = Math.min(99, Math.max(0, Math.round(percent)));
-            if (value != lastPercent) {
-                lastPercent = value;
-                setProgress(job, value, "Procesando " + value + "%");
+            // Minimize disk writes and UI redraws while maintaining useful progress.
+            if (value == 99 || value >= lastPercent + 3) {
+                if (value != lastPercent) {
+                    lastPercent = value;
+                    setProgress(job, value, "Procesando " + value + "%");
+                }
             }
             return Unit.INSTANCE;
         });
