@@ -2,6 +2,7 @@ package com.lsnoglos.mp3local;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
 import android.content.ClipData;
@@ -21,6 +22,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.MediaStore;
+import android.provider.DocumentsContract;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -33,6 +35,8 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
+import android.widget.RadioGroup;
+import android.widget.RadioButton;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -43,6 +47,7 @@ import java.util.List;
 
 /** Navigation, capture/paste and a FIFO download queue. All interface controls are local. */
 public class MainActivity extends Activity {
+    private static final int REQUEST_PICK_FOLDER = 504;
     private static final int BG = Color.rgb(16, 20, 30);
     private static final int PANEL = Color.rgb(28, 35, 50);
     private static final int STONE = Color.rgb(58, 69, 87);
@@ -123,12 +128,18 @@ public class MainActivity extends Activity {
         root.setPadding(dp(12), dp(9), dp(12), dp(10));
         setContentView(root);
 
+        LinearLayout header = horizontal();
+        root.addView(header, new LinearLayout.LayoutParams(-1, dp(47)));
         TextView heading = new TextView(this);
-        heading.setText("♫  MP3 LOCAL");
+        heading.setText("♫  Noel Mp3 Free");
         heading.setTextColor(GOLD);
-        heading.setTextSize(23);
+        heading.setTextSize(22);
         heading.setTypeface(null, Typeface.BOLD);
-        root.addView(heading);
+        header.addView(heading, new LinearLayout.LayoutParams(0, -2, 1));
+        Button settings = button("⚙", STONE, 25);
+        settings.setContentDescription("Configuración: carpeta y calidad de MP3");
+        header.addView(settings, new LinearLayout.LayoutParams(dp(46), dp(43)));
+        settings.setOnClickListener(v -> showSettings());
 
         TextView intro = new TextView(this);
         intro.setText("Explora, captura enlaces y organiza tus descargas");
@@ -183,6 +194,11 @@ public class MainActivity extends Activity {
         paste.setOnClickListener(v -> pasteOnly());
         capture.setOnClickListener(v -> captureCurrent());
 
+        LinearLayout downloadRow = horizontal();
+        LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(-1, dp(50));
+        dl.topMargin = dp(9);
+        root.addView(downloadRow, dl);
+
         Button download = button("Descargar MP3", GREEN, 16);
         download.setTypeface(null, Typeface.BOLD);
         Drawable icon = getDrawable(R.drawable.ic_download);
@@ -192,10 +208,15 @@ public class MainActivity extends Activity {
             download.setCompoundDrawablePadding(dp(10));
         }
         download.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(-1, dp(50));
-        dl.topMargin = dp(9);
-        root.addView(download, dl);
+        downloadRow.addView(download, new LinearLayout.LayoutParams(0, dp(50), 1));
         download.setOnClickListener(v -> enqueueDownload());
+
+        Button browseFiles = button("⋯", STONE, 29);
+        browseFiles.setContentDescription("Abrir carpeta de archivos MP3");
+        LinearLayout.LayoutParams folderParams = new LinearLayout.LayoutParams(dp(53), dp(50));
+        folderParams.leftMargin = dp(8);
+        downloadRow.addView(browseFiles, folderParams);
+        browseFiles.setOnClickListener(v -> openFilesLocation());
 
         LinearLayout tabs = horizontal();
         LinearLayout.LayoutParams tabParams = new LinearLayout.LayoutParams(-1, dp(42));
@@ -278,6 +299,147 @@ public class MainActivity extends Activity {
         downloadProgress.setVisibility(View.GONE);
         root.addView(downloadProgress, new LinearLayout.LayoutParams(-1, dp(4)));
         web.loadUrl("https://m.youtube.com/");
+    }
+
+    private void showSettings() {
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(22), dp(10), dp(22), dp(8));
+
+        TextView qualityHeading = text("Calidad de salida MP3", BG, 17, true);
+        panel.addView(qualityHeading);
+        TextView subtitle = text("Elige la tasa de bits para nuevas descargas:", STONE, 13, false);
+        subtitle.setPadding(0, dp(8), 0, dp(7));
+        panel.addView(subtitle);
+
+        RadioGroup qualities = new RadioGroup(this);
+        qualities.setOrientation(RadioGroup.VERTICAL);
+        int current = OutputSettings.quality(this);
+        for (int kbps : new int[]{128, 192, 256, 320}) {
+            RadioButton option = new RadioButton(this);
+            option.setText(kbps + " kbps" + (kbps == 192 ? "  · Recomendado" : ""));
+            option.setTextColor(BG);
+            option.setTextSize(15);
+            option.setId(kbps);
+            option.setPadding(dp(3), dp(4), dp(3), dp(4));
+            qualities.addView(option);
+            if (kbps == current) option.setChecked(true);
+        }
+        panel.addView(qualities);
+        TextView explanation = text(
+                "Una tasa más alta no mejora el audio si el video original tiene menor calidad.",
+                STONE, 12, false);
+        explanation.setPadding(0, dp(6), 0, dp(17));
+        panel.addView(explanation);
+
+        TextView folderHeading = text("Guardar archivos en", BG, 17, true);
+        panel.addView(folderHeading);
+        TextView folderLabel = text(OutputSettings.describe(OutputSettings.destination(this)),
+                STONE, 13, false);
+        folderLabel.setPadding(0, dp(8), 0, dp(9));
+        panel.addView(folderLabel);
+        Button selectFolder = button("Seleccionar carpeta…", PURPLE, 14);
+        panel.addView(selectFolder, new LinearLayout.LayoutParams(-1, dp(44)));
+        Button restoreFolder = button("Usar carpeta predeterminada", STONE, 13);
+        LinearLayout.LayoutParams restoreParams = new LinearLayout.LayoutParams(-1, dp(42));
+        restoreParams.topMargin = dp(8);
+        panel.addView(restoreFolder, restoreParams);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Ajustes · Noel Mp3 Free")
+                .setView(panel)
+                .setPositiveButton("Cerrar", (d, which) -> { })
+                .create();
+
+        qualities.setOnCheckedChangeListener((group, checkedId) -> {
+            if (OutputSettings.isValidQuality(checkedId)) {
+                OutputSettings.setQuality(this, checkedId);
+            }
+        });
+        selectFolder.setOnClickListener(v -> {
+            dialog.dismiss();
+            selectDestinationFolder();
+        });
+        restoreFolder.setOnClickListener(v -> {
+            OutputSettings.restoreDefault(this);
+            folderLabel.setText(OutputSettings.describe(""));
+            message("Carpeta predeterminada restaurada.");
+            if (selectedTab == 2) refreshLibrary();
+        });
+        dialog.show();
+    }
+
+    private void selectDestinationFolder() {
+        Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        picker.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION |
+                Intent.FLAG_GRANT_WRITE_URI_PERMISSION |
+                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        try {
+            String previous = OutputSettings.destination(this);
+            if (!previous.isEmpty()) {
+                picker.putExtra(DocumentsContract.EXTRA_INITIAL_URI, Uri.parse(previous));
+            }
+            startActivityForResult(picker, REQUEST_PICK_FOLDER);
+        } catch (Exception error) {
+            message("No se pudo abrir el selector de carpetas.");
+        }
+    }
+
+    @Override protected void onActivityResult(int request, int result, Intent resultData) {
+        super.onActivityResult(request, result, resultData);
+        if (request != REQUEST_PICK_FOLDER || result != RESULT_OK ||
+                resultData == null || resultData.getData() == null) return;
+        Uri tree = resultData.getData();
+        int grantFlags = resultData.getFlags() &
+                (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        try {
+            if ((grantFlags & Intent.FLAG_GRANT_WRITE_URI_PERMISSION) == 0)
+                throw new SecurityException("No hay permiso de escritura");
+            getContentResolver().takePersistableUriPermission(tree, grantFlags);
+            OutputSettings.setDestination(this, tree);
+            message("Destino guardado: " + OutputSettings.describe(tree.toString()));
+            if (selectedTab == 2) refreshLibrary();
+        } catch (Exception error) {
+            message("No se pudo guardar esa carpeta. Elige una carpeta con permisos de escritura.");
+        }
+    }
+
+    /**
+     * Opens the selected folder with a compatible Android file manager.
+     * If the device does not support directory VIEW, DocumentsUI is opened
+     * at the folder. Final fallback: in-app MP3 library.
+     */
+    private void openFilesLocation() {
+        String configured = OutputSettings.destination(this);
+        Uri folder;
+        try {
+            if (configured.isEmpty()) {
+                folder = DocumentsContract.buildDocumentUri("com.android.externalstorage.documents",
+                        "primary:Music/MP3 Local");
+            } else {
+                Uri tree = Uri.parse(configured);
+                folder = DocumentsContract.buildDocumentUriUsingTree(
+                        tree, DocumentsContract.getTreeDocumentId(tree));
+            }
+            Intent open = new Intent(Intent.ACTION_VIEW);
+            open.setDataAndType(folder, DocumentsContract.Document.MIME_TYPE_DIR);
+            open.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(open);
+        } catch (Exception unsupported) {
+            try {
+                Intent files = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                files.addCategory(Intent.CATEGORY_OPENABLE);
+                files.setType("audio/*");
+                String initial = configured.isEmpty()
+                        ? "content://com.android.externalstorage.documents/document/primary%3AMusic%2FMP3%20Local"
+                        : configured;
+                files.putExtra(DocumentsContract.EXTRA_INITIAL_URI, Uri.parse(initial));
+                startActivity(files);
+            } catch (Exception unavailable) {
+                showTab(2);
+                message("No hay gestor compatible. Abriendo Mis MP3.");
+            }
+        }
     }
 
     private void navigate() {
@@ -486,18 +648,33 @@ public class MainActivity extends Activity {
 
     private void refreshLibrary() {
         libraryItems.removeAllViews();
-        addText(libraryItems, "Archivos guardados en Música / MP3 Local", GOLD, 17);
-        Uri collection = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
-        String[] columns = {MediaStore.Audio.Media._ID, MediaStore.Audio.Media.DISPLAY_NAME};
-        String filter = MediaStore.Audio.Media.RELATIVE_PATH + " LIKE ?";
+        String selected = OutputSettings.destination(this);
+        boolean custom = !selected.isEmpty();
+        addText(libraryItems, "Archivos guardados en: " + OutputSettings.describe(selected),
+                GOLD, 16);
+        Uri tree = custom ? Uri.parse(selected) : null;
+        Uri collection = custom
+                ? DocumentsContract.buildChildDocumentsUriUsingTree(tree,
+                        DocumentsContract.getTreeDocumentId(tree))
+                : MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
+        String[] columns = custom
+                ? new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                        DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                        DocumentsContract.Document.COLUMN_MIME_TYPE}
+                : new String[]{MediaStore.Audio.Media._ID, MediaStore.Audio.Media.DISPLAY_NAME};
+        String filter = custom ? null : MediaStore.Audio.Media.RELATIVE_PATH + " LIKE ?";
+        String[] args = custom ? null : new String[]{"Music/Mp3 Local/%"};
+        String order = custom ? null : MediaStore.Audio.Media.DATE_ADDED + " DESC";
         int count = 0;
-        try (Cursor cursor = getContentResolver().query(collection, columns, filter,
-                new String[]{"Music/Mp3 Local/%"}, MediaStore.Audio.Media.DATE_ADDED + " DESC")) {
+        try (Cursor cursor = getContentResolver().query(collection, columns, filter, args, order)) {
             if (cursor != null) while (cursor.moveToNext()) {
-                count++;
-                long id = cursor.getLong(0);
                 String name = cursor.getString(1);
-                Uri fileUri = ContentUris.withAppendedId(collection, id);
+                if (custom && !name.toLowerCase(java.util.Locale.ROOT).endsWith(".mp3"))
+                    continue;
+                count++;
+                Uri fileUri = custom
+                        ? DocumentsContract.buildDocumentUriUsingTree(tree, cursor.getString(0))
+                        : ContentUris.withAppendedId(collection, cursor.getLong(0));
                 LinearLayout item = horizontal();
                 item.setPadding(dp(10), dp(8), dp(8), dp(8));
                 item.setBackground(shape(PANEL, 12));
@@ -529,7 +706,7 @@ public class MainActivity extends Activity {
         } catch (Exception error) {
             addText(libraryItems, "Error al leer MP3: " + error.getMessage(), MUTED, 12);
         }
-        if (count == 0) addText(libraryItems, "Todavía no tienes MP3 guardados.", MUTED, 14);
+        if (count == 0) addText(libraryItems, "Todavía no tienes MP3 en esta ubicación.", MUTED, 14);
     }
 
     private void handleSharedLink(Intent intent) {
