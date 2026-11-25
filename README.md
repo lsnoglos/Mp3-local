@@ -1,62 +1,61 @@
-# MP3 Local — Android 1.2.0
+# Noel Mp3 Free — Android 1.3.0
 
-Aplicación Android en español, gratuita y sin anuncios, para explorar YouTube y descargar audio de contenido cuya descarga y conversión estén autorizadas. La conversión a MP3 ocurre localmente mediante yt-dlp y FFmpeg, sin servidor de pago.
+Aplicación Android gratuita y en español que permite explorar YouTube, administrar una cola persistente y convertir a MP3 contenido cuya descarga esté autorizada. Se basa en yt-dlp y FFmpeg, sin servicio de conversión externo.
 
-## Navegación renovada
+## Novedades de la versión 1.3
 
-- **Ir** (azul): abre el enlace introducido o busca la frase escrita en YouTube.
-- **←** (gris): vuelve a la página anterior sin cambiar el campo de búsqueda.
-- **↻** (azul): recarga la página actual del navegador. No es el antiguo botón «Motor».
-- **Pegar** (morado): copia texto del portapapeles en la barra **sin navegar ni recargar**.
-- **Capturar actual** (ámbar): copia automáticamente la URL de la página WebView actual al campo, **sin navegar ni recargar**.
-- **Descargar MP3** (verde, con icono de descarga): incorpora el video a la cola. Puedes seguir navegando mientras se procesa.
-- **Cola (N)**: muestra cuántos archivos están pendientes o en proceso.
-- **Mis MP3**: reproduce o comparte los audios almacenados.
+- **Nombre**: Noel Mp3 Free en el lanzador y en el encabezado, sin cambiar el identificador del paquete (`com.lsnoglos.mp3local`).
+- **Icono**: flecha blanca de descarga sobre fondo violeta y rótulo pequeño «MP3 Noel» en el borde inferior.
+- **⋯**: botón pequeño a la derecha de **Descargar MP3**. Abre la carpeta de destino mediante un administrador compatible con Android; si el dispositivo no admite abrir carpetas por URI, lanza el selector del sistema situado en la carpeta. Si ambos fallan, abre la biblioteca integrada.
+- **⚙** en la esquina superior derecha: ajustes de **calidad** y **carpeta de destino**.
 
-El botón **Motor** fue eliminado porque las actualizaciones de yt-dlp se comprueban automáticamente en segundo plano (máximo cada 7 días tras una actualización exitosa, y con límite de reintentos cuando la red falla). No necesitas administrar el motor para navegar.
+### Calidad de conversión
 
-## Cola de descargas
+Opciones **128, 192, 256 y 320 kbps**. Predeterminada: **192 kbps**. La cifra controla la tasa de bits del MP3 generado por FFmpeg; **una tasa mayor no puede recuperar detalle que el video original no contiene**.
 
-- **FIFO**: los enlaces se procesan de uno en uno, en el orden que se añaden.
-- **Persistente**: la lista queda guardada localmente si sales de la pantalla. Al volver a abrir la app, los trabajos pendientes pueden reanudarse.
-- **Cancelar por elemento**: cancela una descarga en ejecución o elimina un elemento pendiente de la cola, sin afectar los demás.
-- **Reintentar**: los trabajos fallidos o cancelados vuelven a ponerse en espera.
-- **Limpiar historial**: borra del listado las tareas completadas, fallidas y canceladas, no los archivos MP3 guardados.
-- **Evitar duplicados accidentales**: si pulsas descargar varias veces el mismo enlace mientras sigue pendiente/en ejecución, se mantiene una única entrada activa.
-- **Estado visible**: En espera, Descargando, Completado, Error o Cancelado.
+### Carpeta de destino
 
-Los MP3 se publican a través de MediaStore en `Música / MP3 Local`. El servicio de primer plano continúa mientras haya archivos pendientes; Android podría interrumpir procesos si el sistema restringe su ejecución o si se fuerza el cierre de la aplicación.
+- **Predeterminada** (si no eliges otra): almacenamiento compartido **Música / MP3 Local**, igual que en las versiones anteriores.
+- **Personalizada**: pulsa **⚙ → Seleccionar carpeta…** y elige cualquier carpeta permitida por el selector nativo de Android. La app conserva el permiso con el **Storage Access Framework (SAF)**, sin solicitar acceso a todo el almacenamiento.
+- **Restablecer**: **⚙ → Usar carpeta predeterminada**.
+- Las restricciones de Android 11+ impiden escoger ciertas ubicaciones sensibles, como las raíces de almacenamiento y algunas carpetas del sistema.
+- Si el usuario elimina o revoca el permiso de una carpeta previamente elegida, la descarga marca error y solicita volver a seleccionarla; **no guarda silenciosamente en otra ubicación**.
+- **Mis MP3** lista los archivos de la ubicación configurada actualmente. Los archivos antiguos no se mueven al cambiarla.
+- **Los ajustes se guardan en el momento**. Cada elemento de cola conserva la calidad y la carpeta elegidas cuando se añade, para que los cambios posteriores no alteren descargas ya pendientes. Trabajos creados con versiones anteriores conservan 192 kbps y el destino predeterminado.
 
-## APK de prueba desde GitHub Actions
+## Navegación y cola
 
-1. Abre [Actions](https://github.com/lsnoglos/Mp3-local/actions/workflows/android.yml).
-2. Selecciona una ejecución **Compilar APK Android** terminada en verde.
-3. Descarga el artefacto **MP3-Local-Android-APK** de esa ejecución.
-4. Extrae el ZIP e instala `app-debug.apk` en Android 10+.
-5. La firma de depuración puede cambiar entre ejecuciones de GitHub Actions: podría ser necesario desinstalar la versión anterior para instalar la nueva. Los archivos en la carpeta pública `Música / MP3 Local` no deberían eliminarse al desinstalar la app, pero el historial privado de la cola sí puede perderse.
+- **Ir** (azul): navega a la URL o ejecuta una búsqueda.
+- **←**: retrocede; **↻**: recarga la página del navegador.
+- **Pegar** (morado): pega en la barra **sin navegar**.
+- **Capturar actual** (ámbar): copia la URL visible a la barra **sin navegar**.
+- **Descargar MP3** (verde): añade una descarga a la cola FIFO.
+- **Cola (N)**: muestra progreso, permite cancelar o reintentar, conserva pendientes al abandonar la pantalla y mantiene un historial local.
+- **Mis MP3**: reproduce y comparte audios de la ubicación de destino actual.
 
-## Compilar localmente
+La app comprueba las actualizaciones del motor yt-dlp en segundo plano cuando corresponde, sin botón «Motor».
 
-- Android Studio, Java 17, SDK 36, Gradle 9.6, Android Gradle Plugin 9.4.
-- Abre el proyecto por `settings.gradle`.
-- Compila la configuración `app` con `:app:assembleDebug`.
+## Compilar o descargar APK
 
-La construcción usa los módulos `library:0.18.1` y `ffmpeg:0.18.1` de [youtubedl-android](https://github.com/yausername/youtubedl-android).
+1. Abre [GitHub Actions](https://github.com/lsnoglos/Mp3-local/actions/workflows/android.yml).
+2. Selecciona una ejecución **Compilar APK Android** marcada con éxito.
+3. Descarga el artefacto **MP3-Local-Android-APK**.
+4. Extrae el ZIP e instala `app-debug.apk` en un dispositivo Android 10 o posterior.
+5. Esta APK es de depuración. GitHub Actions puede firmar cada compilación con una clave distinta y Android puede pedir desinstalar la versión anterior. Los archivos MP3 guardados en carpetas públicas no deberían borrarse; el historial privado de la app puede perderse.
 
-## Arquitectura
+Para trabajar en local, abre el proyecto con Android Studio, Java 17, SDK 36 y Gradle 9.6. Puedes ejecutar `:app:testDebugUnitTest :app:assembleDebug`.
 
-- `MainActivity.java`: interfaz renovada, WebView, barra de enlace, navegación, cola, biblioteca.
-- `DownloadQueueStore.java`: trabajos FIFO persistentes en SharedPreferences, reintentos y cancelación.
-- `DownloadService.java`: servicio foreground con procesamiento secuencial, yt-dlp + FFmpeg y guardado MediaStore.
-- `UrlTools.java`: validación de enlaces de YouTube.
-- `.github/workflows/android.yml`: pruebas unitarias y compilación automática APK.
+## Componentes
 
-## Limitaciones y derechos
+- `MainActivity.java`: pantalla, navegación, configuración, exploración de carpeta, cola y biblioteca.
+- `OutputSettings.java`: preferencias, tasas de bits admitidas y escritor de archivos SAF / MediaStore.
+- `DownloadQueueStore.java`: cola FIFO persistente; guarda calidad y carpeta por trabajo.
+- `DownloadService.java`: descargas y conversiones secuenciales, progreso, notificaciones y guardado.
+- `UrlTools.java`: validación de enlaces.
+- `res/drawable/ic_launcher.xml`: símbolo de descarga con texto pequeño «MP3 Noel».
 
-El navegador WebView depende de la compatibilidad del sitio web; la reproducción o inicio de sesión pueden estar restringidos. Si fuera necesario, comparte enlaces desde la aplicación oficial de YouTube. Los cambios de YouTube pueden afectar las descargas, incluso con yt-dlp actualizado.
+## Condiciones y limitaciones
 
-Descarga únicamente videos propios o contenido cuya descarga y reutilización estén permitidas. Las condiciones de YouTube pueden restringir la extracción/descarga de audio. La app no omite DRM ni controles de acceso. Es un proyecto de prueba, no una autorización de YouTube ni de titulares de derechos.
+La navegación web y la extracción de audio están sujetas a las condiciones de YouTube. Descarga únicamente videos propios o contenido cuya descarga y conversión estén autorizadas. Los cambios en YouTube pueden afectar algunas descargas aunque se actualice yt-dlp; el proyecto no elude DRM ni controles de acceso.
 
-## Licencias
-
-Código de esta aplicación: GPL-3.0-or-later. Sus dependencias tienen licencias y obligaciones propias: [youtubedl-android](https://github.com/yausername/youtubedl-android), [yt-dlp](https://github.com/yt-dlp/yt-dlp) y [FFmpeg](https://ffmpeg.org/). Revisa y conserva los avisos y licencias al redistribuir, en especial para binarios nativos. No se garantiza compatibilidad con todos los videos o versiones de Android.
+Código de la aplicación: GPL-3.0-or-later. Revisa las licencias de [youtubedl-android](https://github.com/yausername/youtubedl-android), [yt-dlp](https://github.com/yt-dlp/yt-dlp) y [FFmpeg](https://ffmpeg.org/) antes de redistribuir la APK. Las compilaciones deben probarse en un dispositivo Android real antes de considerarse estables.
