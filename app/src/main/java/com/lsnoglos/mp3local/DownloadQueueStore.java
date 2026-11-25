@@ -177,15 +177,25 @@ public final class DownloadQueueStore {
 
     public static synchronized boolean retry(Context context, String id) {
         List<Job> jobs = read(context);
-        for (Job job : jobs) {
+        for (int i = 0; i < jobs.size(); i++) {
+            Job job = jobs.get(i);
             if (job.id.equals(id) && (FAILED.equals(job.status) ||
                     CANCELLED.equals(job.status))) {
                 job.status = WAITING;
                 job.percent = 0;
-                job.message = "En espera";
+                job.message = "En espera (reintentando)";
+                jobs.remove(i);
+                jobs.add(job); // Retry joins the END of the FIFO queue.
                 write(context, jobs);
                 return true;
             }
+        }
+        return false;
+    }
+
+    public static synchronized boolean isCancelled(Context context, String id) {
+        for (Job job : read(context)) {
+            if (job.id.equals(id)) return CANCELLED.equals(job.status);
         }
         return false;
     }
