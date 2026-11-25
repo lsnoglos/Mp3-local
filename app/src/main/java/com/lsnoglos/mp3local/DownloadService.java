@@ -6,8 +6,8 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.ContentValues;
-import android.content.SharedPreferences;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.net.Uri;
 import android.os.Build;
@@ -25,202 +25,234 @@ import java.io.FileInputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Locale;
-import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 import kotlin.Unit;
 
 /**
- * Foreground download/conversion. All download and conversion work runs locally.
- * Only one task at a time; finished audio is published through MediaStore.
+ * Processes a persistent FIFO queue on a single background thread.
+ * Browsing and queuing can continue while one audio file is being converted.
  */
 public class DownloadService extends Service {
     public static final String ACTION_DOWNLOAD = "com.lsnoglos.mp3local.DOWNLOAD";
     public static final String ACTION_CANCEL = "com.lsnoglos.mp3local.CANCEL";
-    public static final String ACTION_UPDATE = "com.lsnoglos.mp3local.UPDATE";
+    public static final String ACTION_CANCEL_ITEM = "com.lsnoglos.mp3local.CANCEL_ITEM";
+    public static final String ACTION_RETRY_ITEM = "com.lsnoglos.mp3local.RETRY_ITEM";
+    public static final String ACTION_RESUME = "com.lsnoglos.mp3local.RESUME";
     public static final String ACTION_STATUS = "com.lsnoglos.mp3local.STATUS";
+    public static final String ACTION_QUEUE_CHANGED = "com.lsnoglos.mp3local.QUEUE_CHANGED";
     public static final String EXTRA_URL = "url";
+    public static final String EXTRA_JOB_ID = "job_id";
     public static final String EXTRA_MESSAGE = "message";
     public static final String EXTRA_PERCENT = "percent";
     public static final String EXTRA_FINISHED = "finished";
+
     private static final String CHANNEL = "downloads";
     private static final int NOTIFICATION_ID = 1001;
     private static final String PREFS = "motor_updates";
     private static final long UPDATE_EVERY = 7L * 24 * 60 * 60 * 1000;
     private static final long RETRY_AFTER = 24L * 60 * 60 * 1000;
 
-    private final ExecutorService executor = Executors.newSingleThreadExecutor();
-    private volatile boolean running;
+    private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private boolean workerRunning;
     private volatile boolean canceled;
-    private volatile String processId;
-    private volatile int lastPercent = -2;
+    private volatile String currentId;
+    private volatile int lastPercent = -1;
 
     @Override public void onCreate() {
         super.onCreate();
         NotificationChannel channel = new NotificationChannel(CHANNEL,
                 "Descargas MP3", NotificationManager.IMPORTANCE_LOW);
-        channel.setDescription("Progreso de descarga y conversión");
+        channel.setDescription("Progreso de la cola de descargas");
         getSystemService(NotificationManager.class).createNotificationChannel(channel);
+        DownloadQueueStore.recoverInterrupted(this);
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent == null) return START_NOT_STICKY;
-        if (ACTION_CANCEL.equals(intent.getAction())) {
-            cancelDownload();
+        String action = intent == null ? ACTION_RESUME : intent.getAction();
+        if (ACTION_CANCEL_ITEM.equals(action) || ACTION_CANCEL.equals(action)) {
+            String id = intent == null ? null : intent.getStringExtra(EXTRA_JOB_ID);
+            if (id == null) id = currentId;
+            if (id != null) cancelItem(id);
+            if (!workerRunning) stopSelf(startId);
             return START_NOT_STICKY;
         }
-        boolean manualUpdate = ACTION_UPDATE.equals(intent.getAction());
-        if (!manualUpdate && !ACTION_DOWNLOAD.equals(intent.getAction())) return START_NOT_STICKY;
-        String url = intent.getStringExtra(EXTRA_URL);
-        if (!manualUpdate && !UrlTools.isVideoUrl(url)) {
-            sendStatus("Enlace de video inválido", -1, true);
+
+        if (ACTION_DOWNLOAD.equals(action)) {
+            String url = intent.getStringExtra(EXTRA_URL);
+            DownloadQueueStore.Job job = DownloadQueueStore.enqueue(this, url);
+            if (job == null) {
+                broadcastStatus("Enlace de video inválido", -1, false);
+                if (!workerRunning) stopSelf(startId);
+                return START_NOT_STICKY;
+            }
+            broadcastStatus("Añadido a cola: " + job.label, -1, false);
+        } else if (ACTION_RETRY_ITEM.equals(action)) {
+            String id = intent.getStringExtra(EXTRA_JOB_ID);
+            if (id != null) DownloadQueueStore.retry(this, id);
+        } else if (!ACTION_RESUME.equals(action)) {
+            if (!workerRunning) stopSelf(startId);
+            return START_NOT_STICKY;
+        }
+
+        if (DownloadQueueStore.pending(this) == 0 && !workerRunning) {
+            broadcastQueue();
             stopSelf(startId);
             return START_NOT_STICKY;
         }
-        if (running) {
-            sendStatus("Ya hay una descarga en proceso", -1, false);
-            return START_NOT_STICKY;
-        }
-        running = true;
-        canceled = false;
-        lastPercent = -2;
-        processId = UUID.randomUUID().toString();
         try {
-            Notification notification = notification(
-                    manualUpdate ? "Preparando actualización de yt-dlp…" : "Iniciando descarga…",
-                    -1, true);
-            if (Build.VERSION.SDK_INT >= 29) {
-                startForeground(NOTIFICATION_ID, notification,
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
-            } else startForeground(NOTIFICATION_ID, notification);
-        } catch (Exception e) {
-            running = false;
-            sendStatus("No se pudo crear la notificación: " + e.getMessage(), -1, true);
+            startForeground(NOTIFICATION_ID,
+                    notification("Cola: " + DownloadQueueStore.pending(this) +
+                            " archivo(s)", -1, currentId),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+        } catch (Exception ex) {
+            broadcastStatus("No se pudo iniciar la descarga: " + ex.getMessage(), -1, false);
+            Log.e("MP3Local", "Cannot start foreground service", ex);
             stopSelf(startId);
             return START_NOT_STICKY;
         }
-        final String jobId = processId;
-        executor.execute(() -> {
-            if (manualUpdate) updateMotor(startId);
-            else downloadAudio(url, jobId, startId);
-        });
+        broadcastQueue();
+        synchronized (this) {
+            if (!workerRunning) {
+                workerRunning = true;
+                worker.execute(this::processQueue);
+            }
+        }
         return START_NOT_STICKY;
     }
 
-    private void downloadAudio(String url, String jobId, int startId) {
-        File folder = new File(getCacheDir(), "jobs/" + jobId);
-        try {
-            if (!folder.exists() && !folder.mkdirs()) {
-                throw new IllegalStateException("No hay espacio para preparar la descarga");
-            }
-            sendStatus("Preparando motor de audio…", -1, false);
-            YoutubeDL.getInstance().init(getApplicationContext());
-            FFmpeg.getInstance().init(getApplicationContext());
-            // Update the extractor before running it; if offline, retain the bundled version.
-            updateEngine(false);
-            if (canceled) throw new InterruptedException("Cancelado");
-
-            YoutubeDLRequest request = new YoutubeDLRequest(url);
-            request.addOption("--no-playlist");
-            request.addOption("--no-mtime");
-            request.addOption("--extract-audio");
-            request.addOption("--audio-format", "mp3");
-            request.addOption("--audio-quality", "192K");
-            request.addOption("-f", "bestaudio/best");
-            request.addOption("-o", new File(folder, "%(title).120B [%(id)s].%(ext)s").getAbsolutePath());
-
-            sendStatus("Descargando y convirtiendo a MP3…", 0, false);
-            YoutubeDL.getInstance().execute(request, jobId, (percent, eta, line) -> {
-                if (canceled) return Unit.INSTANCE;
-                int rounded = Math.min(99, Math.max(0, Math.round(percent)));
-                if (rounded != lastPercent) {
-                    lastPercent = rounded;
-                    sendStatus("Procesando audio · " + rounded + "%", rounded, false);
+    private void processQueue() {
+        while (true) {
+            DownloadQueueStore.Job job = DownloadQueueStore.takeNext(this);
+            if (job == null) break;
+            currentId = job.id;
+            // Respect cancellation even if it arrives between takeNext and currentId assignment.
+            canceled = DownloadQueueStore.isCancelled(this, job.id);
+            lastPercent = -1;
+            broadcastQueue();
+            File temp = new File(getCacheDir(), "jobs/" + job.id);
+            try {
+                downloadOne(job, temp);
+                if (canceled) throw new InterruptedException("Cancelada");
+                DownloadQueueStore.update(this, job.id, DownloadQueueStore.COMPLETED,
+                        100, "MP3 guardado en Música / MP3 Local");
+                broadcastStatus("Descarga completada: " + job.label, 100, false);
+                notifyFinished("Descarga completada: " + job.label);
+            } catch (Exception ex) {
+                if (canceled) {
+                    DownloadQueueStore.update(this, job.id, DownloadQueueStore.CANCELLED,
+                            0, "Cancelada por el usuario");
+                    broadcastStatus("Descarga cancelada", -1, false);
+                } else {
+                    String detail = ex.getMessage();
+                    if (detail == null || detail.trim().isEmpty())
+                        detail = ex.getClass().getSimpleName();
+                    if (detail.length() > 170) detail = detail.substring(0, 170) + "…";
+                    DownloadQueueStore.update(this, job.id, DownloadQueueStore.FAILED,
+                            0, detail);
+                    broadcastStatus("No se pudo descargar: " + detail, -1, false);
+                    Log.w("MP3Local", "Download failed for " + job.label, ex);
                 }
-                return Unit.INSTANCE;
-            });
-
-            if (canceled) throw new InterruptedException("Cancelado");
-            File mp3 = findMp3(folder);
-            if (mp3 == null || mp3.length() == 0) {
-                throw new IllegalStateException("No se generó un MP3. El sitio puede haber cambiado.");
+            } finally {
+                deleteRecursively(temp);
+                currentId = null;
+                broadcastQueue();
             }
-            sendStatus("Guardando en Música / MP3 Local…", 99, false);
-            Uri saved = saveToMusic(mp3);
-            if (saved == null) throw new IllegalStateException("No se pudo guardar el archivo");
-            sendStatus("¡MP3 guardado en Música / MP3 Local!", 100, true);
-            notifyDone("MP3 guardado correctamente");
-        } catch (Exception exception) {
-            String detail = exception.getMessage() == null ?
-                    exception.getClass().getSimpleName() : exception.getMessage();
-            if (canceled) detail = "Descarga cancelada";
-            else if (detail.contains("older than 90 days"))
-                detail = "El motor yt-dlp está desactualizado. Pulsa '↻ Motor' y vuelve a probar.";
-            sendStatus(detail, -1, true);
-            notifyDone(detail);
-        } finally {
-            deleteRecursively(folder);
-            running = false;
-            processId = null;
-            stopForeground(STOP_FOREGROUND_REMOVE);
-            stopSelf(startId);
         }
+        synchronized (this) {
+            // Another download may have been queued after takeNext() saw an empty list.
+            if (DownloadQueueStore.pending(this) > 0) {
+                worker.execute(this::processQueue);
+                return;
+            }
+            workerRunning = false;
+            stopForeground(STOP_FOREGROUND_REMOVE);
+            stopSelf();
+        }
+        broadcastStatus("Cola terminada", 100, true);
     }
 
-    /**
-     * Manual update gives clear feedback; automatic updates are attempted at most once
-     * per day and successful checks are cached for seven days.
-     */
-    private void updateMotor(int startId) {
-        try {
-            sendStatus("Inicializando motor de descarga…", -1, false);
-            YoutubeDL.getInstance().init(getApplicationContext());
-            if (canceled) throw new InterruptedException("Actualización cancelada");
-            updateEngine(true);
-            if (canceled) throw new InterruptedException("Actualización cancelada");
-            sendStatus("Motor yt-dlp actualizado. Puedes descargar MP3.", 100, true);
-            notifyDone("Motor yt-dlp actualizado");
-        } catch (Exception error) {
-            String message = canceled ? "Actualización cancelada" :
-                    "No se pudo actualizar yt-dlp. Revisa la conexión e inténtalo otra vez.";
-            Log.w("MP3Local", "Error al actualizar yt-dlp", error);
-            sendStatus(message, -1, true);
-            notifyDone(message);
-        } finally {
-            running = false;
-            processId = null;
-            stopForeground(STOP_FOREGROUND_REMOVE);
-            stopSelf(startId);
-        }
+    private void downloadOne(DownloadQueueStore.Job job, File temp) throws Exception {
+        if (canceled || DownloadQueueStore.isCancelled(this, job.id))
+            throw new InterruptedException("Cancelada");
+        if (!temp.exists() && !temp.mkdirs())
+            throw new IllegalStateException("No se pudo crear la carpeta temporal");
+        setProgress(job, 0, "Preparando motor de audio");
+        YoutubeDL.getInstance().init(getApplicationContext());
+        FFmpeg.getInstance().init(getApplicationContext());
+        updateEngine();
+        if (canceled) throw new InterruptedException("Cancelada");
+
+        YoutubeDLRequest request = new YoutubeDLRequest(job.url);
+        request.addOption("--no-playlist");
+        request.addOption("--no-mtime");
+        request.addOption("--extract-audio");
+        request.addOption("--audio-format", "mp3");
+        request.addOption("--audio-quality", "192K");
+        request.addOption("-f", "bestaudio/best");
+        request.addOption("-o",
+                new File(temp, "%(title).120B [%(id)s].%(ext)s").getAbsolutePath());
+
+        setProgress(job, 0, "Descargando y convirtiendo MP3");
+        YoutubeDL.getInstance().execute(request, job.id, (percent, eta, line) -> {
+            if (canceled) return Unit.INSTANCE;
+            int value = Math.min(99, Math.max(0, Math.round(percent)));
+            // Minimize disk writes and UI redraws while maintaining useful progress.
+            if (value == 99 || value >= lastPercent + 3) {
+                if (value != lastPercent) {
+                    lastPercent = value;
+                    setProgress(job, value, "Procesando " + value + "%");
+                }
+            }
+            return Unit.INSTANCE;
+        });
+        if (canceled) throw new InterruptedException("Cancelada");
+        File mp3 = findMp3(temp);
+        if (mp3 == null || mp3.length() == 0)
+            throw new IllegalStateException("No se pudo generar MP3; comprueba el enlace o actualiza yt-dlp.");
+        setProgress(job, 99, "Guardando en Música / MP3 Local");
+        saveToMusic(mp3);
     }
 
-    private void updateEngine(boolean force) throws Exception {
+    private void setProgress(DownloadQueueStore.Job job, int percent, String message) {
+        if (canceled) return;
+        DownloadQueueStore.update(this, job.id, DownloadQueueStore.RUNNING, percent, message);
+        broadcastStatus(job.label + " · " + message, percent, false);
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        if (nm != null) nm.notify(NOTIFICATION_ID, notification(
+                message + " · Restantes: " + DownloadQueueStore.pending(this),
+                percent, job.id));
+        broadcastQueue();
+    }
+
+    private void cancelItem(String id) {
+        boolean wasRunning = DownloadQueueStore.cancel(this, id);
+        if (wasRunning && id.equals(currentId)) {
+            canceled = true;
+            try { YoutubeDL.getInstance().destroyProcessById(id); }
+            catch (Exception ex) { Log.w("MP3Local", "Could not abort process", ex); }
+        }
+        broadcastQueue();
+        broadcastStatus("Elemento retirado de la cola", -1, false);
+    }
+
+    private void updateEngine() {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         long now = System.currentTimeMillis();
-        long lastSuccess = prefs.getLong("success", 0);
-        long lastAttempt = prefs.getLong("attempt", 0);
-        if (!force) {
-            if (lastSuccess > 0 && now >= lastSuccess &&
-                    now - lastSuccess < UPDATE_EVERY) return;
-            if (lastAttempt > 0 && now >= lastAttempt &&
-                    now - lastAttempt < RETRY_AFTER) return;
-        }
+        long success = prefs.getLong("success", 0);
+        long attempt = prefs.getLong("attempt", 0);
+        if (success > 0 && now >= success && now - success < UPDATE_EVERY) return;
+        if (attempt > 0 && now >= attempt && now - attempt < RETRY_AFTER) return;
         if (canceled) return;
-        sendStatus("Comprobando actualización de yt-dlp…", -1, false);
         prefs.edit().putLong("attempt", now).apply();
         try {
             String result = String.valueOf(YoutubeDL.getInstance().updateYoutubeDL(
                     getApplicationContext(), YoutubeDL.UpdateChannel._STABLE));
-            if (!"DONE".equals(result) && !"ALREADY_UP_TO_DATE".equals(result)) {
-                throw new IllegalStateException("La actualización devolvió: " + result);
-            }
-            prefs.edit().putLong("success", System.currentTimeMillis()).apply();
-            sendStatus("Motor yt-dlp preparado", -1, false);
+            if ("DONE".equals(result) || "ALREADY_UP_TO_DATE".equals(result))
+                prefs.edit().putLong("success", System.currentTimeMillis()).apply();
         } catch (Exception error) {
-            if (force) throw error;
-            Log.w("MP3Local", "No se pudo actualizar; se usará el motor local", error);
-            sendStatus("Sin actualización; intentando descarga con motor actual…", -1, false);
+            Log.w("MP3Local", "Using installed yt-dlp motor due to update error", error);
         }
     }
 
@@ -233,15 +265,15 @@ public class DownloadService extends Service {
         values.put(MediaStore.Audio.Media.IS_PENDING, 1);
         Uri collection = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
         Uri uri = getContentResolver().insert(collection, values);
-        if (uri == null) throw new IllegalStateException("No se pudo crear el archivo MP3");
+        if (uri == null) throw new IllegalStateException("No se pudo crear el archivo");
         try {
             try (InputStream source = new FileInputStream(file);
                  OutputStream target = getContentResolver().openOutputStream(uri)) {
-                if (target == null) throw new IllegalStateException("No se pudo escribir el archivo");
+                if (target == null) throw new IllegalStateException("Sin permiso para guardar");
                 byte[] buffer = new byte[64 * 1024];
                 int read;
                 while ((read = source.read(buffer)) != -1) {
-                    if (canceled) throw new InterruptedException("Cancelado");
+                    if (canceled) throw new InterruptedException("Cancelada");
                     target.write(buffer, 0, read);
                 }
                 target.flush();
@@ -250,83 +282,73 @@ public class DownloadService extends Service {
             values.put(MediaStore.Audio.Media.IS_PENDING, 0);
             getContentResolver().update(uri, values, null, null);
             return uri;
-        } catch (Exception error) {
+        } catch (Exception e) {
             getContentResolver().delete(uri, null, null);
-            throw error;
+            throw e;
         }
     }
 
     private File findMp3(File dir) {
         File[] files = dir.listFiles();
         if (files == null) return null;
-        for (File file : files) {
-            if (file.isDirectory()) {
-                File found = findMp3(file);
-                if (found != null) return found;
-            } else if (file.getName().toLowerCase(Locale.ROOT).endsWith(".mp3")) {
-                return file;
+        for (File f : files) {
+            if (f.isDirectory()) {
+                File result = findMp3(f);
+                if (result != null) return result;
+            } else if (f.getName().toLowerCase(Locale.ROOT).endsWith(".mp3")) {
+                return f;
             }
         }
         return null;
     }
 
-    private void cancelDownload() {
-        if (!running) {
-            stopSelf();
-            return;
-        }
-        canceled = true;
-        String id = processId;
-        if (id != null) {
-            try { YoutubeDL.getInstance().destroyProcessById(id); }
-            catch (Exception ignored) { }
-        }
-        sendStatus("Cancelando descarga…", -1, false);
+    private void broadcastStatus(String message, int percent, boolean finished) {
+        Intent broadcast = new Intent(ACTION_STATUS);
+        broadcast.setPackage(getPackageName());
+        broadcast.putExtra(EXTRA_MESSAGE, message);
+        broadcast.putExtra(EXTRA_PERCENT, percent);
+        broadcast.putExtra(EXTRA_FINISHED, finished);
+        sendBroadcast(broadcast);
     }
 
-    private void sendStatus(String message, int percent, boolean finished) {
-        Intent status = new Intent(ACTION_STATUS);
-        status.setPackage(getPackageName());
-        status.putExtra(EXTRA_MESSAGE, message);
-        status.putExtra(EXTRA_PERCENT, percent);
-        status.putExtra(EXTRA_FINISHED, finished);
-        sendBroadcast(status);
-        if (!finished && percent != 100) {
-            getSystemService(NotificationManager.class).notify(NOTIFICATION_ID,
-                    notification(message, percent, true));
-        }
+    private void broadcastQueue() {
+        Intent changed = new Intent(ACTION_QUEUE_CHANGED);
+        changed.setPackage(getPackageName());
+        sendBroadcast(changed);
     }
 
-    private Notification notification(String description, int percent, boolean cancellable) {
+    private Notification notification(String message, int percent, String activeId) {
         Intent open = new Intent(this, MainActivity.class);
-        PendingIntent openPending = PendingIntent.getActivity(this, 10, open,
+        PendingIntent openPI = PendingIntent.getActivity(this, 10, open,
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         Notification.Builder builder = new Notification.Builder(this, CHANNEL)
-                .setContentTitle("MP3 Local")
-                .setContentText(description)
+                .setContentTitle("MP3 Local · Descargas")
+                .setContentText(message)
                 .setSmallIcon(android.R.drawable.stat_sys_download)
+                .setContentIntent(openPI)
                 .setOnlyAlertOnce(true)
-                .setOngoing(cancellable)
-                .setContentIntent(openPending);
+                .setOngoing(true);
         if (percent < 0) builder.setProgress(0, 0, true);
         else builder.setProgress(100, percent, false);
-        if (cancellable) {
-            Intent cancel = new Intent(this, DownloadService.class).setAction(ACTION_CANCEL);
-            PendingIntent stop = PendingIntent.getService(this, 11, cancel,
+        if (activeId != null) {
+            Intent cancel = new Intent(this, DownloadService.class)
+                    .setAction(ACTION_CANCEL_ITEM)
+                    .putExtra(EXTRA_JOB_ID, activeId);
+            PendingIntent pi = PendingIntent.getService(this, 10, cancel,
                     PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
-            builder.addAction(android.R.drawable.ic_menu_close_clear_cancel, "Cancelar", stop);
+            builder.addAction(android.R.drawable.ic_menu_close_clear_cancel, "Cancelar actual", pi);
         }
         return builder.build();
     }
 
-    private void notifyDone(String text) {
-        Notification notification = new Notification.Builder(this, CHANNEL)
+    private void notifyFinished(String message) {
+        Notification n = new Notification.Builder(this, CHANNEL)
                 .setContentTitle("MP3 Local")
-                .setContentText(text)
+                .setContentText(message)
                 .setSmallIcon(android.R.drawable.stat_sys_download_done)
-                .setAutoCancel(true)
-                .build();
-        getSystemService(NotificationManager.class).notify(1002, notification);
+                .setAutoCancel(true).build();
+        getSystemService(NotificationManager.class).notify(
+                (int) (System.currentTimeMillis() % 30000) + 2000, n);
     }
 
     private void deleteRecursively(File file) {
@@ -337,9 +359,10 @@ public class DownloadService extends Service {
         }
         if (!file.delete()) file.deleteOnExit();
     }
+
     @Override public IBinder onBind(Intent intent) { return null; }
     @Override public void onDestroy() {
-        executor.shutdownNow();
+        worker.shutdownNow();
         super.onDestroy();
     }
 }
