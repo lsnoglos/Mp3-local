@@ -136,7 +136,7 @@ public class DownloadService extends Service {
                 downloadOne(job, temp);
                 if (canceled) throw new InterruptedException("Cancelada");
                 DownloadQueueStore.update(this, job.id, DownloadQueueStore.COMPLETED,
-                        100, "MP3 guardado en Música / MP3 Local");
+                        100, "MP3 guardado en " + OutputSettings.describe(job.destinationTree));
                 broadcastStatus("Descarga completada: " + job.label, 100, false);
                 notifyFinished("Descarga completada: " + job.label);
             } catch (Exception ex) {
@@ -189,7 +189,7 @@ public class DownloadService extends Service {
         request.addOption("--no-mtime");
         request.addOption("--extract-audio");
         request.addOption("--audio-format", "mp3");
-        request.addOption("--audio-quality", "192K");
+        request.addOption("--audio-quality", job.qualityKbps + "K");
         request.addOption("-f", "bestaudio/best");
         request.addOption("-o",
                 new File(temp, "%(title).120B [%(id)s].%(ext)s").getAbsolutePath());
@@ -211,8 +211,8 @@ public class DownloadService extends Service {
         File mp3 = findMp3(temp);
         if (mp3 == null || mp3.length() == 0)
             throw new IllegalStateException("No se pudo generar MP3; comprueba el enlace o actualiza yt-dlp.");
-        setProgress(job, 99, "Guardando en Música / MP3 Local");
-        saveToMusic(mp3);
+        setProgress(job, 99, "Guardando en " + OutputSettings.describe(job.destinationTree));
+        OutputSettings.save(this, mp3, job.destinationTree, () -> canceled);
     }
 
     private void setProgress(DownloadQueueStore.Job job, int percent, String message) {
@@ -256,38 +256,6 @@ public class DownloadService extends Service {
         }
     }
 
-    private Uri saveToMusic(File file) throws Exception {
-        ContentValues values = new ContentValues();
-        values.put(MediaStore.Audio.Media.DISPLAY_NAME, file.getName());
-        values.put(MediaStore.Audio.Media.MIME_TYPE, "audio/mpeg");
-        values.put(MediaStore.Audio.Media.RELATIVE_PATH,
-                Environment.DIRECTORY_MUSIC + "/MP3 Local/");
-        values.put(MediaStore.Audio.Media.IS_PENDING, 1);
-        Uri collection = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
-        Uri uri = getContentResolver().insert(collection, values);
-        if (uri == null) throw new IllegalStateException("No se pudo crear el archivo");
-        try {
-            try (InputStream source = new FileInputStream(file);
-                 OutputStream target = getContentResolver().openOutputStream(uri)) {
-                if (target == null) throw new IllegalStateException("Sin permiso para guardar");
-                byte[] buffer = new byte[64 * 1024];
-                int read;
-                while ((read = source.read(buffer)) != -1) {
-                    if (canceled) throw new InterruptedException("Cancelada");
-                    target.write(buffer, 0, read);
-                }
-                target.flush();
-            }
-            values.clear();
-            values.put(MediaStore.Audio.Media.IS_PENDING, 0);
-            getContentResolver().update(uri, values, null, null);
-            return uri;
-        } catch (Exception e) {
-            getContentResolver().delete(uri, null, null);
-            throw e;
-        }
-    }
-
     private File findMp3(File dir) {
         File[] files = dir.listFiles();
         if (files == null) return null;
@@ -322,7 +290,7 @@ public class DownloadService extends Service {
         PendingIntent openPI = PendingIntent.getActivity(this, 10, open,
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         Notification.Builder builder = new Notification.Builder(this, CHANNEL)
-                .setContentTitle("MP3 Local · Descargas")
+                .setContentTitle("Noel Mp3 Free · Descargas")
                 .setContentText(message)
                 .setSmallIcon(android.R.drawable.stat_sys_download)
                 .setContentIntent(openPI)
@@ -343,7 +311,7 @@ public class DownloadService extends Service {
 
     private void notifyFinished(String message) {
         Notification n = new Notification.Builder(this, CHANNEL)
-                .setContentTitle("MP3 Local")
+                .setContentTitle("Noel Mp3 Free")
                 .setContentText(message)
                 .setSmallIcon(android.R.drawable.stat_sys_download_done)
                 .setAutoCancel(true).build();
